@@ -1,21 +1,19 @@
+# app.py
 import os
 import streamlit as st
 from dotenv import load_dotenv
 from utils import generate_social_posts, export_calendar_csv
 
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 st.set_page_config(page_title="Social Media Agent", layout="wide")
 st.title("📣 Social Media Agent")
 
 with st.sidebar:
     st.header("Settings")
-    model = st.selectbox("Model (Local/Provider)", ["OpenAI (recommended)"])
+    model_note = st.info("Uses OpenAI (gpt-4o-mini recommended) with fallbacks. Make sure OPENAI_API_KEY is set in .env")
     tone_default = st.selectbox("Default Tone", ["Professional", "Casual", "Funny", "Inspirational"])
     st.markdown("**Tips:** Provide a short brand voice + target audience for better results.")
 
-# Input area
 st.subheader("Create social content")
 col1, col2 = st.columns([3,1])
 with col1:
@@ -32,39 +30,63 @@ with col2:
     st.markdown("- Brand voice: `Helpful, concise, developer-focused`")
     st.markdown("- Platforms: `LinkedIn, X/Twitter`")
 
+def is_error_entry(entry: dict) -> bool:
+    cap = entry.get("caption","")
+    return cap.startswith("(error)")
+
 if generate:
     if not topic.strip():
         st.warning("Please enter a topic.")
     else:
         with st.spinner("Generating content..."):
-            results = generate_social_posts(topic=topic, brand_voice=brand_voice, platforms=platforms, tone=tone, n_variations=num_variations)
-            st.success("Done — review below!")
-        # Display results
-        for platform, items in results.items():
-            st.markdown(f"### {platform}")
-            for i, item in enumerate(items, start=1):
-                st.markdown(f"**Variation {i}**")
-                st.write(item.get("caption",""))
-                if item.get("hashtags"):
-                    st.markdown(f"**Hashtags:** {item.get('hashtags')}")
-                if item.get("cta"):
-                    st.markdown(f"**CTA:** {item.get('cta')}")
-                st.markdown("---")
+            try:
+                results = generate_social_posts(topic=topic, brand_voice=brand_voice, platforms=platforms, tone=tone, n_variations=num_variations)
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
+                results = {}
 
-        # Calendar generation
-        st.markdown("### Content Calendar")
-        if st.button("Generate 7-day content calendar"):
-            with st.spinner("Building calendar..."):
-                calendar = []
-                from datetime import datetime, timedelta
-                start = datetime.today()
-                # simple round-robin across platforms
-                for i in range(7):
-                    date = (start + timedelta(days=i)).strftime("%Y-%m-%d")
-                    platform = platforms[i % len(platforms)] if platforms else "Instagram"
-                    items = results.get(platform, [])
-                    caption = items[i % len(items)].get("caption","") if items else ""
-                    calendar.append({"date": date, "platform": platform, "caption": caption})
-                st.table(calendar)
-                csv_bytes = export_calendar_csv(calendar)
-                st.download_button("Download CSV", data=csv_bytes, file_name="content_calendar.csv", mime="text/csv")
+        if not results:
+            st.error("No results returned. Check openai_error.log or your API key.")
+        else:
+            any_error = False
+            for platform, items in results.items():
+                st.markdown(f"### {platform}")
+                for i, item in enumerate(items, start=1):
+                    st.markdown(f"**Variation {i}**")
+                    caption = item.get("caption","")
+                    hashtags = item.get("hashtags","")
+                    cta = item.get("cta","")
+                    if caption and caption.startswith("(error)"):
+                        any_error = True
+                        st.error(caption)
+                    else:
+                        st.write(caption)
+                        if hashtags:
+                            st.markdown(f"**Hashtags:** {hashtags}")
+                        if cta:
+                            st.markdown(f"**CTA:** {cta}")
+                    st.markdown("---")
+
+            if any_error:
+                st.info("If you see errors, check openai_error.log in project folder or ensure OPENAI_API_KEY is valid.")
+            # Calendar generation
+            st.markdown("### Content Calendar")
+            if st.button("Generate 7-day content calendar"):
+                with st.spinner("Building calendar..."):
+                    from datetime import datetime, timedelta
+                    calendar = []
+                    start = datetime.today()
+                    for i in range(7):
+                        date = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+                        # round-robin platform + variation pick
+                        if platforms:
+                            platform = platforms[i % len(platforms)]
+                            items = results.get(platform, [])
+                            caption = items[i % len(items)].get("caption","") if items else ""
+                        else:
+                            platform = "Instagram"
+                            caption = ""
+                        calendar.append({"date": date, "platform": platform, "caption": caption})
+                    st.table(calendar)
+                    csv_bytes = export_calendar_csv(calendar)
+                    st.download_button("Download CSV", data=csv_bytes, file_name="content_calendar.csv", mime="text/csv")
